@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const SAVE_KEY = 'forest-camp-v1';
+const SAVE_KEY = 'forest-camp-v2';
 const RES = {
   wood: ['マキ', '🪵'],
   meat: ['肉', '🥩'],
@@ -10,7 +10,7 @@ const RES = {
 };
 
 const baseFacilities = {
-  furnace: { name: '炉', icon: '🔥', x: 50, y: 48, desc: 'キャンプの命。温度範囲と解放条件に影響。', cost: l => ({ wood: 8 + l * 10, stone: Math.max(0, l - 2) * 4 }), unlock: () => true },
+  furnace: { name: '炉', icon: '🔥', x: 50, y: 48, desc: 'キャンプの命。近づくと袋の資源を自動納品し、マキで温度を回復。', cost: l => ({ wood: 8 + l * 10, stone: Math.max(0, l - 2) * 4 }), unlock: () => true },
   storage: { name: '倉庫', icon: '📦', x: 28, y: 56, desc: '資源の保管上限を増やす。', cost: l => ({ wood: 12 + l * 8, stone: l * 2 }), unlock: s => s.facilities.furnace.level >= 2 },
   lodging: { name: '宿舎', icon: '⛺', x: 70, y: 58, desc: '生存者と作業員上限を増やす。', cost: l => ({ wood: 24 + l * 12, meat: 8 + l * 5 }), unlock: s => s.facilities.furnace.level >= 2 },
   woodcamp: { name: '伐採所', icon: '🪓', x: 16, y: 34, desc: '作業員がマキを自動で集める。', cost: l => ({ wood: 26 + l * 12, meat: l * 3 }), unlock: s => s.facilities.lodging.level >= 1 },
@@ -21,9 +21,9 @@ const baseFacilities = {
 
 const initial = () => ({
   res: { wood: 0, meat: 0, stone: 0 },
-  heat: 48,
+  heat: 56,
   survivors: 1,
-  message: 'マキと肉を集めて、中央の炉へ運ぼう。',
+  message: '画面をタップ/ドラッグすると移動。資源に近づくと拾い、炉に近づくと納品します。',
   last: Date.now(),
   player: { x: 50, y: 72, bag: { wood: 0, meat: 0, stone: 0 } },
   facilities: Object.fromEntries(Object.keys(baseFacilities).map(k => [k, { level: k === 'furnace' ? 1 : 0, workers: 0 }])),
@@ -32,19 +32,19 @@ const initial = () => ({
 
 function spawnNodes() {
   const arr = [];
-  for (let i = 0; i < 18; i++) arr.push(makeNode(i));
+  for (let i = 0; i < 22; i++) arr.push(makeNode(i));
   return arr;
 }
 function makeNode(id) {
   const r = Math.random();
-  const type = r < .55 ? 'wood' : r < .88 ? 'meat' : 'stone';
+  const type = r < .58 ? 'wood' : r < .9 ? 'meat' : 'stone';
   return { id, type, x: 8 + Math.random() * 84, y: 12 + Math.random() * 76, amount: type === 'stone' ? 1 : 2 };
 }
 function cap(state, type) {
   const storage = state.facilities.storage.level;
   const furnace = state.facilities.furnace.level;
-  const base = type === 'stone' ? 40 : 70;
-  return base + storage * 65 + furnace * 10;
+  const base = type === 'stone' ? 40 : 80;
+  return base + storage * 70 + furnace * 12;
 }
 function canPay(state, cost) { return Object.entries(cost).every(([k, v]) => state.res[k] >= v); }
 function pay(state, cost) { Object.entries(cost).forEach(([k, v]) => state.res[k] -= v); }
@@ -57,53 +57,65 @@ function workerCapFor(key, state) {
 function unlocked(key, state) { return baseFacilities[key].unlock(state); }
 
 function App() {
+  const target = useRef({ x: 50, y: 72, active: false });
+  const keys = useRef({});
+  const worldRef = useRef(null);
   const [state, setState] = useState(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(SAVE_KEY));
+      const saved = JSON.parse(localStorage.getItem(SAVE_KEY) || localStorage.getItem('forest-camp-v1'));
       if (saved) {
         const elapsed = Math.min(7200, Math.floor((Date.now() - saved.last) / 1000));
         const next = { ...initial(), ...saved, last: Date.now() };
+        next.player = next.player || { x: 50, y: 72, bag: { wood: 0, meat: 0, stone: 0 } };
+        next.player.bag = { wood: 0, meat: 0, stone: 0, ...next.player.bag };
         applyProduction(next, elapsed, true);
-        next.message = elapsed > 60 ? `留守中に${Math.floor(elapsed/60)}分ぶんの資源を回収した。` : 'キャンプに戻った。';
+        next.message = elapsed > 60 ? `留守中に${Math.floor(elapsed / 60)}分ぶんの資源を回収した。` : 'キャンプに戻った。';
+        target.current = { x: next.player.x, y: next.player.y, active: false };
         return next;
       }
     } catch {}
     return initial();
   });
-  const keys = useRef({});
 
   useEffect(() => {
     const down = e => { keys.current[e.key.toLowerCase()] = true; };
     const up = e => { keys.current[e.key.toLowerCase()] = false; };
-    window.addEventListener('keydown', down); window.addEventListener('keyup', up);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
   }, []);
 
   useEffect(() => {
-    const t = setInterval(() => setState(prev => tick(prev, keys.current)), 1000 / 15);
+    const t = setInterval(() => setState(prev => tick(prev, keys.current, target.current)), 1000 / 30);
     return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
-    const t = setInterval(() => localStorage.setItem(SAVE_KEY, JSON.stringify({ ...state, last: Date.now() })), 1500);
+    const t = setInterval(() => localStorage.setItem(SAVE_KEY, JSON.stringify({ ...state, last: Date.now() })), 1200);
     return () => clearInterval(t);
   }, [state]);
 
-  const free = totalWorkers(state) - usedWorkers(state);
-  const quest = useMemo(() => currentQuest(state), [state]);
+  const setMoveTarget = e => {
+    const rect = worldRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    target.current = { x: Math.max(4, Math.min(96, x)), y: Math.max(8, Math.min(92, y)), active: true };
+  };
 
   const upgrade = key => setState(prev => {
     const s = structuredClone(prev);
     if (!unlocked(key, s)) return s;
     const f = s.facilities[key];
     const cost = baseFacilities[key].cost(f.level);
-    if (!canPay(s, cost)) { s.message = '資源が足りない。'; return s; }
-    pay(s, cost); f.level += 1;
+    if (!canPay(s, cost)) { s.message = `資源が足りない：${formatCost(cost)}`; return s; }
+    pay(s, cost);
+    f.level += 1;
     if (key === 'lodging') s.survivors += 1;
-    if (key === 'furnace') s.heat = Math.min(100, s.heat + 18);
+    if (key === 'furnace') s.heat = Math.min(100, s.heat + 22);
     s.message = `${baseFacilities[key].name}をレベル${f.level}にした。`;
     return s;
   });
+
   const assign = (key, delta) => setState(prev => {
     const s = structuredClone(prev);
     const f = s.facilities[key];
@@ -114,79 +126,136 @@ function App() {
     return s;
   });
 
-  const reset = () => { if (confirm('最初からやり直しますか？')) { localStorage.removeItem(SAVE_KEY); setState(initial()); } };
+  const free = totalWorkers(state) - usedWorkers(state);
+  const quest = useMemo(() => currentQuest(state), [state]);
+  const reset = () => { if (confirm('最初からやり直しますか？')) { localStorage.removeItem(SAVE_KEY); localStorage.removeItem('forest-camp-v1'); setState(initial()); target.current = { x: 50, y: 72, active: false }; } };
 
   return <div className="app">
     <header>
       <div><p className="eyebrow">snow idle camp builder</p><h1>FOREST CAMP</h1></div>
       <button onClick={reset}>リセット</button>
     </header>
+
     <section className="stats">
-      {Object.keys(RES).map(k => <div className="stat" key={k}><b>{RES[k][1]} {RES[k][0]}</b><span>{Math.floor(state.res[k])}/{cap(state,k)}</span></div>)}
+      {Object.keys(RES).map(k => <div className="stat" key={k}><b>{RES[k][1]} {RES[k][0]}</b><span>{Math.floor(state.res[k])}/{cap(state, k)}</span></div>)}
       <div className="stat heat"><b>🔥 温度</b><span>{Math.floor(state.heat)}%</span></div>
       <div className="stat"><b>👥 生存者</b><span>{state.survivors}人 / 空き{free}人</span></div>
     </section>
+
     <main>
-      <section className="world">
+      <section
+        className="world"
+        ref={worldRef}
+        onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); setMoveTarget(e); }}
+        onPointerMove={e => { if (e.buttons || e.pointerType === 'touch') setMoveTarget(e); }}
+      >
         <div className="snow"></div>
-        <div className="quest"><b>次の目標</b><span>{quest}</span></div>
-        {state.nodes.map(n => <div key={n.id} className={'node '+n.type} style={{left:n.x+'%', top:n.y+'%'}}>{RES[n.type][1]}</div>)}
-        {Object.entries(baseFacilities).map(([key, def]) => unlocked(key, state) ? <button key={key} onClick={() => upgrade(key)} className={'facility '+(state.facilities[key].level?'':'ghost')} style={{left:def.x+'%', top:def.y+'%'}}>
+        <div className="quest"><b>次の目標</b><span>{quest}</span><small>画面をタップした場所へ歩く</small></div>
+        <div className="target" style={{ left: target.current.x + '%', top: target.current.y + '%', opacity: target.current.active ? 1 : 0 }} />
+        {state.nodes.map(n => <div key={n.id} className={'node ' + n.type} style={{ left: n.x + '%', top: n.y + '%' }}>{RES[n.type][1]}</div>)}
+        {Object.entries(baseFacilities).map(([key, def]) => unlocked(key, state) ? <button
+          key={key}
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); upgrade(key); }}
+          className={'facility ' + (state.facilities[key].level ? '' : 'ghost')}
+          style={{ left: def.x + '%', top: def.y + '%' }}
+        >
           <span>{def.icon}</span><b>{def.name}</b><em>Lv.{state.facilities[key].level}</em>
         </button> : null)}
-        <div className="player" style={{left:state.player.x+'%', top:state.player.y+'%'}}>🧍</div>
+        <div className="player" style={{ left: state.player.x + '%', top: state.player.y + '%' }}>🧍</div>
         <div className="bag">袋：🪵{state.player.bag.wood} 🥩{state.player.bag.meat} 🪨{state.player.bag.stone}</div>
       </section>
+
       <aside className="panel">
         <h2>設備</h2>
         {Object.entries(baseFacilities).map(([key, def]) => unlocked(key, state) ? <div className="card" key={key}>
           <div className="cardTop"><strong>{def.icon} {def.name} Lv.{state.facilities[key].level}</strong><button onClick={() => upgrade(key)}>強化</button></div>
           <p>{def.desc}</p>
           <small>次：{formatCost(def.cost(state.facilities[key].level))}</small>
-          {workerCapFor(key, state) > 0 && <div className="workers"><button onClick={() => assign(key,-1)}>-</button><span>作業員 {state.facilities[key].workers}/{workerCapFor(key,state)}</span><button onClick={() => assign(key,1)}>+</button></div>}
+          {workerCapFor(key, state) > 0 && <div className="workers"><button onClick={() => assign(key, -1)}>-</button><span>作業員 {state.facilities[key].workers}/{workerCapFor(key, state)}</span><button onClick={() => assign(key, 1)}>+</button></div>}
         </div> : null)}
       </aside>
     </main>
     <footer>{state.message}</footer>
-    <Pad keys={keys} />
   </div>;
 }
 
-function tick(prev, keys) {
+function tick(prev, keys, target) {
   const s = structuredClone(prev);
   const p = s.player;
-  const speed = 1.05;
-  if (keys.a || keys.arrowleft) p.x -= speed;
-  if (keys.d || keys.arrowright) p.x += speed;
-  if (keys.w || keys.arrowup) p.y -= speed;
-  if (keys.s || keys.arrowdown) p.y += speed;
-  p.x = Math.max(4, Math.min(96, p.x)); p.y = Math.max(8, Math.min(92, p.y));
+  let dx = 0;
+  let dy = 0;
+  const keySpeed = 1.45;
+  if (keys.a || keys.arrowleft) dx -= keySpeed;
+  if (keys.d || keys.arrowright) dx += keySpeed;
+  if (keys.w || keys.arrowup) dy -= keySpeed;
+  if (keys.s || keys.arrowdown) dy += keySpeed;
+
+  if (dx || dy) {
+    const len = Math.hypot(dx, dy) || 1;
+    p.x += dx / len * keySpeed;
+    p.y += dy / len * keySpeed;
+    target.active = false;
+  } else if (target.active) {
+    const tx = target.x - p.x;
+    const ty = target.y - p.y;
+    const dist = Math.hypot(tx, ty);
+    if (dist < .7) target.active = false;
+    else {
+      const step = Math.min(dist, 1.15);
+      p.x += tx / dist * step;
+      p.y += ty / dist * step;
+    }
+  }
+
+  p.x = Math.max(4, Math.min(96, p.x));
+  p.y = Math.max(8, Math.min(92, p.y));
+
   s.nodes.forEach((n, i) => {
     const d = Math.hypot(p.x - n.x, p.y - n.y);
-    if (d < 5) { p.bag[n.type] += n.amount; s.nodes[i] = makeNode(n.id); s.message = `${RES[n.type][0]}を拾った。炉の近くで納品。`; }
+    if (d < 7.2) {
+      p.bag[n.type] += n.amount;
+      s.nodes[i] = makeNode(n.id);
+      s.message = `${RES[n.type][0]}を拾った。炉か倉庫へ近づくと納品。`;
+    }
   });
-  if (Math.hypot(p.x - 50, p.y - 48) < 10) {
-    Object.keys(p.bag).forEach(k => { const move = Math.min(p.bag[k], cap(s,k) - s.res[k]); s.res[k] += move; p.bag[k] -= move; });
-    const burn = Math.min(s.res.wood, 1, Math.max(0, 100 - s.heat) / 8);
-    if (burn > 0) { s.res.wood -= burn; s.heat += burn * 8; }
+
+  const nearFurnace = Math.hypot(p.x - 50, p.y - 48) < 12;
+  const nearStorage = unlocked('storage', s) && Math.hypot(p.x - 28, p.y - 56) < 10;
+  if (nearFurnace || nearStorage) {
+    let moved = 0;
+    Object.keys(p.bag).forEach(k => {
+      const move = Math.min(p.bag[k], cap(s, k) - s.res[k]);
+      s.res[k] += move;
+      p.bag[k] -= move;
+      moved += move;
+    });
+    if (moved > 0) s.message = '資源をキャンプに納品した。';
   }
-  applyProduction(s, 1/15, false);
-  s.heat -= (0.018 - Math.min(.012, s.facilities.wall.level * .003));
-  if (s.heat < 5 && Math.random() < .01) { s.survivors = Math.max(1, s.survivors - 1); s.message = '寒さで生存者が離脱した。炉を温めよう。'; }
+
+  if (nearFurnace) {
+    const burn = Math.min(s.res.wood, .08, Math.max(0, 100 - s.heat) / 80);
+    if (burn > 0) { s.res.wood -= burn; s.heat += burn * 80; }
+  }
+
+  applyProduction(s, 1 / 30, false);
+  s.heat -= (0.014 - Math.min(.01, s.facilities.wall.level * .0025));
+  if (s.heat < 5 && Math.random() < .004) { s.survivors = Math.max(1, s.survivors - 1); s.message = '寒さで生存者が離脱した。炉を温めよう。'; }
   s.heat = Math.max(0, Math.min(100, s.heat));
   return s;
 }
+
 function applyProduction(s, seconds, offline) {
-  const rates = { woodcamp: ['wood', .09], hunting: ['meat', .055], quarry: ['stone', .03] };
+  const rates = { woodcamp: ['wood', .12], hunting: ['meat', .075], quarry: ['stone', .04] };
   Object.entries(rates).forEach(([key, [res, base]]) => {
     const f = s.facilities[key];
-    const gain = f.workers * f.level * base * seconds * (offline ? .55 : 1);
-    s.res[res] = Math.min(cap(s,res), s.res[res] + gain);
+    const gain = f.workers * Math.max(1, f.level) * base * seconds * (offline ? .55 : 1);
+    s.res[res] = Math.min(cap(s, res), s.res[res] + gain);
   });
-  const foodUse = Math.max(0, s.survivors - 2) * .002 * seconds;
+  const foodUse = Math.max(0, s.survivors - 2) * .0014 * seconds;
   s.res.meat = Math.max(0, s.res.meat - foodUse);
 }
-function formatCost(cost) { return Object.entries(cost).filter(([,v])=>v>0).map(([k,v]) => `${RES[k][1]}${v}`).join(' ') || '無料'; }
+function formatCost(cost) { return Object.entries(cost).filter(([, v]) => v > 0).map(([k, v]) => `${RES[k][1]}${v}`).join(' ') || '無料'; }
 function currentQuest(s) {
   if (s.facilities.furnace.level < 2) return 'マキを集めて炉をLv.2にする';
   if (s.facilities.storage.level < 1) return '倉庫を建てて資源上限を増やす';
@@ -195,12 +264,6 @@ function currentQuest(s) {
   if (s.facilities.hunting.level < 1) return '狩場を作って肉集めを自動化';
   if (s.facilities.quarry.level < 1) return '炉Lv.4から石切場を解放する';
   return '設備を強化してキャンプを村に育てる';
-}
-function Pad({keys}) {
-  const set = (k, v) => { keys.current[k] = v; };
-  return <div className="pad">
-    {['w','a','s','d'].map(k => <button key={k} onTouchStart={()=>set(k,true)} onTouchEnd={()=>set(k,false)} onMouseDown={()=>set(k,true)} onMouseUp={()=>set(k,false)}>{k==='w'?'↑':k==='a'?'←':k==='s'?'↓':'→'}</button>)}
-  </div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
