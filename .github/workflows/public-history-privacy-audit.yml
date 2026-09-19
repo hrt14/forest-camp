@@ -1,0 +1,48 @@
+name: Public history privacy audit
+on:
+  push:
+    branches: [security/public-history-audit-20260919]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Fetch all ordinary and PR refs
+        run: git fetch --force origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' '+refs/pull/*/head:refs/remotes/pull/*/head' || true
+      - name: Scan reachable history without printing matched values
+        run: |
+          python3 - <<'PY'
+          import json,re,subprocess
+          from collections import defaultdict
+          def sh(*a): return subprocess.check_output(a,stderr=subprocess.DEVNULL)
+          def blobs(args):
+              r=set()
+              for line in sh('git','rev-list','--objects',*args).decode('utf-8','replace').splitlines():
+                  oid=line.split(' ',1)[0]
+                  try:
+                      if sh('git','cat-file','-t',oid).strip()==b'blob': r.add(oid)
+                  except: pass
+              return r
+          cur=blobs(['origin/main']); allb=blobs(['--all'])
+          p={'email':re.compile(rb'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b'),'credential_assignment':re.compile(rb'(?i)(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret|private[_-]?key)\s*[:=]\s*[\'\"][^\'\"\r\n]{6,}[\'\"]'),'private_key':re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),'github_token':re.compile(rb'\b(?:ghp_|github_pat_)[A-Za-z0-9_\-]{20,}\b'),'stripe_secret':re.compile(rb'\bsk_(?:live|test)_[A-Za-z0-9]{12,}\b'),'aws_access_key':re.compile(rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b'),'local_user_path':re.compile(rb'(?i)(?:/Users/[^/\s]+/|[A-Z]:\\Users\\[^\\\s]+\\)'),'family_health_review':re.compile('次女|長女|不登校|精神科|ADHD|ASD|家族|娘|妻|クリニック|通院'.encode()),'business_private_review':re.compile('年収|給与|月商|売上目標|取引先|クライアント|顧客情報|報酬'.encode())}
+          ca=defaultdict(int); cc=defaultdict(int); scanned=0
+          for oid in allb:
+              try:
+                  if int(sh('git','cat-file','-s',oid))>2000000: continue
+                  data=sh('git','cat-file','-p',oid)
+              except: continue
+              if b'\0' in data: continue
+              scanned+=1
+              for n,pat in p.items():
+                  if n=='email':
+                      m=[x.group(0).lower() for x in pat.finditer(data)]; m=[x for x in m if not (x.endswith(b'@users.noreply.github.com') or x.endswith(b'@example.com') or x.endswith(b'@localhost'))]; hit=bool(m)
+                  else: hit=bool(pat.search(data))
+                  if hit:
+                      ca[n]+=1
+                      if oid in cur: cc[n]+=1
+          print(json.dumps({'repo':'forest-camp','current_blob_count':len(cur),'reachable_blob_count':len(allb),'scanned_text_blobs':scanned,'current_hit_blob_counts':dict(sorted(cc.items())),'all_history_hit_blob_counts':dict(sorted(ca.items())),'historical_only_hit_blob_counts':{k:max(0,ca[k]-cc.get(k,0)) for k in sorted(ca)}},ensure_ascii=False,sort_keys=True))
+          PY
