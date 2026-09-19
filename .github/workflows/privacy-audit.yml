@@ -1,44 +1,36 @@
-name: Read-only privacy inventory - forest-camp
+name: Forest camp historical path investigation
 on:
   push:
     branches: [security/privacy-audit-20260919]
 permissions:
   contents: read
 jobs:
-  audit:
+  investigate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Fetch branch, tag and PR heads
-        run: |
-          set -euo pipefail
-          git fetch -q origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
-          git fetch -q origin '+refs/pull/*/head:refs/remotes/pull/*/head' || true
-      - name: Scan source snapshots; print counts only
+      - name: Identify historical files without printing sensitive contents
         run: |
           python3 - <<'PY'
           import json,re,subprocess
-          from collections import Counter
           def git(*a):return subprocess.check_output(['git',*a],stderr=subprocess.DEVNULL)
-          names=['email','credential','private_key','github_token','stripe_secret','aws_key','local_path','family_review','business_review']
-          pats=[re.compile(x) for x in [rb'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b',rb'(?i)(?:api[_-]?key|secret|token|password|passwd|private[_-]?key)\s*[:=]\s*[\'\"][^\'\"\r\n]{6,}[\'\"]',rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',rb'\b(?:ghp_|github_pat_)[A-Za-z0-9_-]{20,}\b',rb'\bsk_(?:live|test)_[A-Za-z0-9]{12,}\b',rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b',rb'(?i)(?:/Users/[^/\s]+/|[A-Z]:\\Users\\[^\\\s]+\\)','次女|長女|不登校|精神科|ADHD|ASD|家族|娘|妻|クリニック|通院'.encode(),'年収|給与|月商|売上目標|取引先|クライアント|顧客情報|報酬'.encode()]]
-          current={e.split(b'\t',1)[0].split()[2].decode() for e in git('ls-tree','-r','-z','origin/main').split(b'\0') if e and e.split(b'\t',1)[0].split()[1]==b'blob'}
-          refs=[x for x in git('for-each-ref','--format=%(refname)','refs/remotes/origin','refs/remotes/pull','refs/tags').decode().splitlines() if not x.endswith('/security/privacy-audit-20260919')]
-          objects={x.split(' ',1)[0] for x in git('rev-list','--objects',*refs).decode().splitlines()}
-          counts={'current':Counter(),'historical_only':Counter()}; examined=0; skipped=0
-          for oid in objects:
+          current={x.split(b'\t',1)[0].split()[2].decode() for x in git('ls-tree','-r','-z','main').split(b'\0') if x and x.split(b'\t',1)[0].split()[1]==b'blob'}
+          pat=re.compile(rb'(?i)(?:/Users/[^/\s]+/|[A-Z]:\\Users\\[^\\\s]+\\)')
+          results=[]
+          for line in git('rev-list','--objects','main').decode('utf8','replace').splitlines():
+            oid,*rest=line.split(' ',1)
+            if oid in current or not rest:continue
             if git('cat-file','-t',oid).strip()!=b'blob':continue
-            if int(git('cat-file','-s',oid))>1000000:skipped+=1;continue
+            if int(git('cat-file','-s',oid))>1000000:continue
             data=git('cat-file','-p',oid)
-            if b'\0' in data:skipped+=1;continue
-            examined+=1
-            bucket='current' if oid in current else 'historical_only'
-            for k,p in zip(names,pats):
-              hits=p.findall(data)
-              if k=='email':hits=[v for v in hits if not v.lower().endswith((b'@example.com',b'@example.org',b'@users.noreply.github.com'))]
-              if hits:counts[bucket][k]+=1
-          print(json.dumps({'repo':'forest-camp','scope':'all fetched branch/tag/PR head refs, text blobs <=1MB','current_text_files':len(current),'scanned_unique_text_blobs':examined,'skipped_binary_or_large':skipped,'candidate_blobs_by_scope':{k:dict(v) for k,v in counts.items()},'caveat':'Matches are unverified regex candidates, not confirmed disclosures; unreferenced GitHub objects/caches are out of scope.'},sort_keys=True))
+            if b'\0' in data or not pat.search(data):continue
+            filepath=rest[0]
+            safe=filepath if re.fullmatch('[A-Za-z0-9_./-]+',filepath) else '(non-ASCII path)'
+            matches=pat.findall(data)
+            redacted_example=all(any(w in m.lower() for w in (b'example',b'<user>',b'username',b'john',b'jane',b'YOUR_USER'.lower())) for m in matches)
+            results.append({'path':safe,'blob_sha':oid,'match_count':len(matches),'obvious_placeholder_only':redacted_example})
+          print(json.dumps({'historical_path_candidates':results,'never_prints_matched_path_values':True},sort_keys=True))
           PY
