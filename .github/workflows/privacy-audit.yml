@@ -17,10 +17,10 @@ jobs:
           python3 - <<'PY'
           import json,re,subprocess
           def git(*a):return subprocess.check_output(['git',*a],stderr=subprocess.DEVNULL)
-          current={x.split(b'\t',1)[0].split()[2].decode() for x in git('ls-tree','-r','-z','main').split(b'\0') if x and x.split(b'\t',1)[0].split()[1]==b'blob'}
+          current={x.split(b'\t',1)[0].split()[2].decode() for x in git('ls-tree','-r','-z','origin/main').split(b'\0') if x and x.split(b'\t',1)[0].split()[1]==b'blob'}
           pat=re.compile(rb'(?i)(?:/Users/[^/\s]+/|[A-Z]:\\Users\\[^\\\s]+\\)')
           results=[]
-          for line in git('rev-list','--objects','main').decode('utf8','replace').splitlines():
+          for line in git('rev-list','--objects','origin/main').decode('utf8','replace').splitlines():
             oid,*rest=line.split(' ',1)
             if oid in current or not rest:continue
             if git('cat-file','-t',oid).strip()!=b'blob':continue
@@ -30,7 +30,7 @@ jobs:
             filepath=rest[0]
             safe=filepath if re.fullmatch('[A-Za-z0-9_./-]+',filepath) else '(non-ASCII path)'
             matches=pat.findall(data)
-            redacted_example=all(any(w in m.lower() for w in (b'example',b'<user>',b'username',b'john',b'jane',b'YOUR_USER'.lower())) for m in matches)
+            redacted_example=all(any(w in m.lower() for w in (b'example',b'<user>',b'username',b'john',b'jane',b'your_user')) for m in matches)
             results.append({'path':safe,'blob_sha':oid,'match_count':len(matches),'obvious_placeholder_only':redacted_example})
           print(json.dumps({'historical_path_candidates':results,'never_prints_matched_path_values':True},sort_keys=True))
           PY
